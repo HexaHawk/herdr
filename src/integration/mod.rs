@@ -1245,24 +1245,35 @@ fn remove_kimi_hooks_from_config(content: &str) -> String {
         }
     }
 
-    let Some(start) = start_index else {
-        return content.to_string();
-    };
-    let Some(end) = end_index else {
-        return content.to_string();
-    };
+    if let (Some(start), Some(end)) = (start_index, end_index) {
+        let mut remove_start = start;
+        while remove_start > 0 && lines[remove_start - 1].trim().is_empty() {
+            remove_start -= 1;
+        }
 
-    let mut remove_start = start;
-    while remove_start > 0 && lines[remove_start - 1].trim().is_empty() {
-        remove_start -= 1;
+        let mut remove_end = end;
+        while remove_end + 1 < lines.len() && lines[remove_end + 1].trim().is_empty() {
+            remove_end += 1;
+        }
+
+        lines.drain(remove_start..=remove_end);
     }
 
-    let mut remove_end = end;
-    while remove_end + 1 < lines.len() && lines[remove_end + 1].trim().is_empty() {
-        remove_end += 1;
-    }
-
-    lines.drain(remove_start..=remove_end);
+    // Remove any top-level `hooks = ...` inline array to avoid a duplicate key
+    // error with the `[[hooks]]` array-of-tables we will add. Only remove lines
+    // that appear before the first table header, since that's where kimi places
+    // its default `hooks = []` placeholder.
+    let mut seen_table = false;
+    lines.retain(|line| {
+        let trimmed = line.trim();
+        if !seen_table && trimmed.starts_with('[') {
+            seen_table = true;
+        }
+        if !seen_table && trimmed.starts_with("hooks") && trimmed.contains('=') {
+            return false;
+        }
+        true
+    });
 
     let mut result = lines.join("\n");
     if content.ends_with('\n') || result.is_empty() {
@@ -1997,6 +2008,33 @@ mod tests {
 
         assert_eq!(start_count, 1);
         assert_eq!(end_count, 1);
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_kimi_removes_existing_hooks_inline_array() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let kimi_dir = home.join(".kimi");
+        fs::create_dir_all(&kimi_dir).unwrap();
+        fs::write(
+            kimi_dir.join("config.toml"),
+            "model = \"kimi-latest\"\nhooks = []\n",
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        let installed = install_kimi().unwrap();
+        let config = fs::read_to_string(&installed.config_path).unwrap();
+
+        assert!(!config.contains("hooks = []"));
+        assert!(config.contains("# herdr-kimi-start"));
+        assert!(config.contains("# herdr-kimi-end"));
+        assert!(config.contains("[[hooks]]"));
+        assert!(config.contains("model = \"kimi-latest\""));
 
         std::env::remove_var("HOME");
         let _ = fs::remove_dir_all(base);
