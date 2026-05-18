@@ -25,6 +25,10 @@ const CODEX_HOME_ENV_VAR: &str = "CODEX_HOME";
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "herdr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/herdr-agent-state.js");
 const OPENCODE_INTEGRATION_VERSION: u32 = 1;
+const KIMI_HOOK_INSTALL_NAME: &str = "herdr-agent-state.sh";
+const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/herdr-agent-state.sh");
+const KIMI_INTEGRATION_VERSION: u32 = 1;
+const KIMI_SHARE_DIR_ENV_VAR: &str = "KIMI_SHARE_DIR";
 const INTEGRATION_VERSION_MARKER: &str = "HERDR_INTEGRATION_VERSION=";
 
 #[derive(Debug)]
@@ -43,6 +47,12 @@ pub(crate) struct CodexInstallPaths {
 #[derive(Debug)]
 pub(crate) struct OpenCodeInstallPaths {
     pub plugin_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) struct KimiInstallPaths {
+    pub hook_path: PathBuf,
+    pub config_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +98,14 @@ pub(crate) struct CodexUninstallResult {
 pub(crate) struct OpenCodeUninstallResult {
     pub plugin_path: PathBuf,
     pub removed_plugin: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct KimiUninstallResult {
+    pub hook_path: PathBuf,
+    pub config_path: PathBuf,
+    pub removed_hook_file: bool,
+    pub updated_config: bool,
 }
 
 pub(crate) fn apply_pane_env(cmd: &mut CommandBuilder, pane_id: PaneId) {
@@ -136,6 +154,19 @@ pub(crate) fn install_target(
                 "installed opencode integration plugin to {}",
                 installed.plugin_path.display()
             )]
+        }
+        crate::api::schema::IntegrationTarget::Kimi => {
+            let installed = install_kimi()?;
+            vec![
+                format!(
+                    "installed kimi integration hook to {}",
+                    installed.hook_path.display()
+                ),
+                format!(
+                    "ensured kimi hooks in {}",
+                    installed.config_path.display()
+                ),
+            ]
         }
     };
 
@@ -233,6 +264,33 @@ pub(crate) fn uninstall_target(
                 )]
             }
         }
+        crate::api::schema::IntegrationTarget::Kimi => {
+            let result = uninstall_kimi()?;
+            let mut messages = Vec::new();
+            if result.removed_hook_file {
+                messages.push(format!(
+                    "removed kimi hook at {}",
+                    result.hook_path.display()
+                ));
+            } else {
+                messages.push(format!(
+                    "no kimi hook found at {}",
+                    result.hook_path.display()
+                ));
+            }
+            if result.updated_config {
+                messages.push(format!(
+                    "removed herdr kimi hook entries from {}",
+                    result.config_path.display()
+                ));
+            } else {
+                messages.push(format!(
+                    "no herdr kimi hook entries found in {}",
+                    result.config_path.display()
+                ));
+            }
+            messages
+        }
     };
 
     crate::logging::integration_action("uninstall", integration_target_label(target), "ok");
@@ -247,6 +305,7 @@ pub(crate) fn integration_target_label(
         crate::api::schema::IntegrationTarget::Claude => "claude",
         crate::api::schema::IntegrationTarget::Codex => "codex",
         crate::api::schema::IntegrationTarget::Opencode => "opencode",
+        crate::api::schema::IntegrationTarget::Kimi => "kimi",
     }
 }
 
@@ -270,7 +329,7 @@ fn integration_specs() -> [(
     crate::api::schema::IntegrationTarget,
     io::Result<PathBuf>,
     u32,
-); 4] {
+); 5] {
     [
         (
             crate::api::schema::IntegrationTarget::Pi,
@@ -291,6 +350,11 @@ fn integration_specs() -> [(
             crate::api::schema::IntegrationTarget::Opencode,
             opencode_dir().map(|dir| dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME)),
             OPENCODE_INTEGRATION_VERSION,
+        ),
+        (
+            crate::api::schema::IntegrationTarget::Kimi,
+            kimi_dir().map(|dir| dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME)),
+            KIMI_INTEGRATION_VERSION,
         ),
     ]
 }
@@ -588,6 +652,64 @@ pub(crate) fn install_opencode() -> io::Result<OpenCodeInstallPaths> {
     fs::write(&plugin_path, OPENCODE_PLUGIN_ASSET)?;
 
     Ok(OpenCodeInstallPaths { plugin_path })
+}
+
+pub(crate) fn install_kimi() -> io::Result<KimiInstallPaths> {
+    let dir = kimi_dir()?;
+    if !dir.is_dir() {
+        return Err(io::Error::other(format!(
+            "kimi directory not found at {}. install kimi code cli first",
+            dir.display()
+        )));
+    }
+
+    let hooks_dir = dir.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
+    fs::write(&hook_path, KIMI_HOOK_ASSET)?;
+    make_executable(&hook_path)?;
+
+    let config_path = dir.join("config.toml");
+    let existing_config = if config_path.is_file() {
+        fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+    let new_config = build_kimi_config_with_hooks(&existing_config, &hook_path);
+    if new_config != existing_config {
+        fs::write(&config_path, new_config)?;
+    }
+
+    Ok(KimiInstallPaths {
+        hook_path,
+        config_path,
+    })
+}
+
+pub(crate) fn uninstall_kimi() -> io::Result<KimiUninstallResult> {
+    let dir = kimi_dir()?;
+    let hook_path = dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
+    let config_path = dir.join("config.toml");
+    let mut updated_config = false;
+
+    if config_path.is_file() {
+        let existing_config = fs::read_to_string(&config_path)?;
+        let new_config = remove_kimi_hooks_from_config(&existing_config);
+        if new_config != existing_config {
+            fs::write(&config_path, new_config)?;
+            updated_config = true;
+        }
+    }
+
+    let removed_hook_file = remove_file_if_exists(&hook_path)?;
+
+    Ok(KimiUninstallResult {
+        hook_path,
+        config_path,
+        removed_hook_file,
+        updated_config,
+    })
 }
 
 pub(crate) fn uninstall_pi() -> io::Result<PiUninstallResult> {
@@ -1053,6 +1175,102 @@ fn opencode_dir() -> io::Result<PathBuf> {
     Ok(home_dir()?.join(".config/opencode"))
 }
 
+fn kimi_dir() -> io::Result<PathBuf> {
+    config_dir_from_env_or_home(KIMI_SHARE_DIR_ENV_VAR, &[".kimi"])
+}
+
+fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> String {
+    let mut result = remove_kimi_hooks_from_config(content);
+    while result.ends_with('\n') {
+        result.pop();
+    }
+    if !result.is_empty() {
+        result.push('\n');
+        result.push('\n');
+    }
+
+    let quoted = shell_single_quote(&hook_path.display().to_string());
+    result.push_str("# herdr-kimi-start\n");
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"SessionStart\"\ncommand = \"bash {quoted} idle\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"UserPromptSubmit\"\ncommand = \"bash {quoted} working\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"bash {quoted} working\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"PostToolUse\"\ncommand = \"bash {quoted} working\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"PostToolUseFailure\"\ncommand = \"bash {quoted} working\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"SubagentStart\"\ncommand = \"bash {quoted} working\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"SubagentStop\"\ncommand = \"bash {quoted} working\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"Stop\"\ncommand = \"bash {quoted} idle\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"StopFailure\"\ncommand = \"bash {quoted} idle\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"SessionEnd\"\ncommand = \"bash {quoted} release\"\n\n"
+    ));
+    result.push_str(&format!(
+        "[[hooks]]\nevent = \"Notification\"\nmatcher = \"permission_prompt\"\ncommand = \"bash {quoted} blocked\"\n"
+    ));
+    result.push_str("# herdr-kimi-end\n");
+
+    result
+}
+
+fn remove_kimi_hooks_from_config(content: &str) -> String {
+    let start_marker = "# herdr-kimi-start";
+    let end_marker = "# herdr-kimi-end";
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let mut start_index = None;
+    let mut end_index = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim() == start_marker {
+            start_index = Some(index);
+        } else if line.trim() == end_marker {
+            end_index = Some(index);
+            break;
+        }
+    }
+
+    let Some(start) = start_index else {
+        return content.to_string();
+    };
+    let Some(end) = end_index else {
+        return content.to_string();
+    };
+
+    let mut remove_start = start;
+    while remove_start > 0 && lines[remove_start - 1].trim().is_empty() {
+        remove_start -= 1;
+    }
+
+    let mut remove_end = end;
+    while remove_end + 1 < lines.len() && lines[remove_end + 1].trim().is_empty() {
+        remove_end += 1;
+    }
+
+    lines.drain(remove_start..=remove_end);
+
+    let mut result = lines.join("\n");
+    if content.ends_with('\n') || result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
 fn home_dir() -> io::Result<PathBuf> {
     std::env::var("HOME")
         .map(PathBuf::from)
@@ -1073,6 +1291,7 @@ mod tests {
         std::env::remove_var(PI_CODING_AGENT_DIR_ENV_VAR);
         std::env::remove_var(CLAUDE_CONFIG_DIR_ENV_VAR);
         std::env::remove_var(CODEX_HOME_ENV_VAR);
+        std::env::remove_var(KIMI_SHARE_DIR_ENV_VAR);
     }
 
     fn unique_base() -> PathBuf {
@@ -1691,6 +1910,141 @@ mod tests {
         let err = install_opencode().unwrap_err().to_string();
 
         assert!(err.contains("opencode config directory not found"));
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_kimi_writes_hook_and_updates_config() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let kimi_dir = home.join(".kimi");
+        fs::create_dir_all(&kimi_dir).unwrap();
+        fs::write(kimi_dir.join("config.toml"), "model = \"kimi-latest\"\n").unwrap();
+        std::env::set_var("HOME", &home);
+
+        let installed = install_kimi().unwrap();
+        let hook_content = fs::read_to_string(&installed.hook_path).unwrap();
+        let config = fs::read_to_string(&installed.config_path).unwrap();
+
+        assert_eq!(
+            installed.hook_path,
+            kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME)
+        );
+        assert_eq!(installed.config_path, kimi_dir.join("config.toml"));
+        assert_eq!(hook_content, KIMI_HOOK_ASSET);
+        assert!(config.contains("model = \"kimi-latest\""));
+        assert!(config.contains("# herdr-kimi-start"));
+        assert!(config.contains("# herdr-kimi-end"));
+        assert!(config.contains("event = \"SessionStart\""));
+        assert!(config.contains("event = \"UserPromptSubmit\""));
+        assert!(config.contains("event = \"PreToolUse\""));
+        assert!(config.contains("event = \"PostToolUse\""));
+        assert!(config.contains("event = \"PostToolUseFailure\""));
+        assert!(config.contains("event = \"SubagentStart\""));
+        assert!(config.contains("event = \"SubagentStop\""));
+        assert!(config.contains("event = \"Stop\""));
+        assert!(config.contains("event = \"StopFailure\""));
+        assert!(config.contains("event = \"SessionEnd\""));
+        assert!(config.contains("event = \"Notification\""));
+        assert!(config.contains("matcher = \"permission_prompt\""));
+        assert!(config.contains("bash ") && config.contains(" idle\""));
+        assert!(config.contains("bash ") && config.contains(" working\""));
+        assert!(config.contains("bash ") && config.contains(" blocked\""));
+        assert!(config.contains("bash ") && config.contains(" release\""));
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_kimi_uses_kimi_share_dir_env() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let kimi_dir = base.join("custom-kimi");
+        fs::create_dir_all(&kimi_dir).unwrap();
+        std::env::set_var(KIMI_SHARE_DIR_ENV_VAR, &kimi_dir);
+
+        let installed = install_kimi().unwrap();
+
+        assert_eq!(
+            installed.hook_path,
+            kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME)
+        );
+        assert_eq!(installed.config_path, kimi_dir.join("config.toml"));
+
+        clear_integration_path_env();
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_kimi_is_idempotent_for_hook_entries() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let kimi_dir = home.join(".kimi");
+        fs::create_dir_all(&kimi_dir).unwrap();
+        std::env::set_var("HOME", &home);
+
+        install_kimi().unwrap();
+        install_kimi().unwrap();
+
+        let config = fs::read_to_string(kimi_dir.join("config.toml")).unwrap();
+        let start_count = config.matches("# herdr-kimi-start").count();
+        let end_count = config.matches("# herdr-kimi-end").count();
+
+        assert_eq!(start_count, 1);
+        assert_eq!(end_count, 1);
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn uninstall_kimi_removes_herdr_hooks_and_preserves_others() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let kimi_dir = home.join(".kimi");
+        fs::create_dir_all(&kimi_dir).unwrap();
+        let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
+        fs::create_dir_all(hook_path.parent().unwrap()).unwrap();
+        fs::write(&hook_path, KIMI_HOOK_ASSET).unwrap();
+        fs::write(
+            kimi_dir.join("config.toml"),
+            "model = \"kimi-latest\"\n\n# herdr-kimi-start\n[[hooks]]\nevent = \"Stop\"\ncommand = \"bash '/path' idle\"\n# herdr-kimi-end\n\n[[hooks]]\nevent = \"Stop\"\ncommand = \"echo keep\"\n",
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        let result = uninstall_kimi().unwrap();
+        let config = fs::read_to_string(kimi_dir.join("config.toml")).unwrap();
+
+        assert!(result.removed_hook_file);
+        assert!(result.updated_config);
+        assert!(!result.hook_path.exists());
+        assert!(config.contains("model = \"kimi-latest\""));
+        assert!(!config.contains("# herdr-kimi-start"));
+        assert!(!config.contains("# herdr-kimi-end"));
+        assert!(config.contains("echo keep"));
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_kimi_errors_when_config_dir_missing() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let err = install_kimi().unwrap_err().to_string();
+
+        assert!(err.contains("kimi directory not found"));
 
         std::env::remove_var("HOME");
         let _ = fs::remove_dir_all(base);

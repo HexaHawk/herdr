@@ -177,21 +177,23 @@ automatic detection works out of the box. process name matching plus terminal ou
 | [droid](https://factory.ai) | ✓ | ✓ | ✓ |
 | [amp](https://ampcode.com) | ✓ | ✓ | ✓ |
 | [opencode](https://github.com/anomalyco/opencode) | ✓ | ✓ | ✓ |
+| [kimi](https://github.com/MoonshotAI/kimi-cli) | ✓ | ✓ | ✓ |
 | [grok cli](https://x.ai/grok) | ✓ | ✓ | ✓ |
 
-detected but not fully tested: gemini cli, cursor agent, cline, kimi, github copilot cli.
+detected but not fully tested: gemini cli, cursor agent, cline, github copilot cli.
 
 for agents outside the built-in list, herdr still works as a terminal multiplexer with workspaces, panes, and tiling. custom integrations can report agent labels over the socket api. see [`SOCKET_API.md`](./SOCKET_API.md).
 
 ### direct integrations
 
-the built-in pi, claude code, codex, and opencode integrations forward semantic state to herdr over the socket api. install with:
+the built-in pi, claude code, codex, opencode, and kimi integrations forward semantic state to herdr over the socket api. install with:
 
 ```bash
 herdr integration install pi
 herdr integration install claude
 herdr integration install codex
 herdr integration install opencode
+herdr integration install kimi
 ```
 
 see [`INTEGRATIONS.md`](./INTEGRATIONS.md) for setup details.
@@ -263,7 +265,7 @@ full logging and environment variable details: [`CONFIGURATION.md`](./CONFIGURAT
 ## docs
 
 - [`CONFIGURATION.md`](./CONFIGURATION.md) — keybindings, themes, notifications, environment variables
-- [`INTEGRATIONS.md`](./INTEGRATIONS.md) — pi, claude code, codex, opencode integrations
+- [`INTEGRATIONS.md`](./INTEGRATIONS.md) — pi, claude code, codex, opencode, kimi integrations
 - [`SKILL.md`](./SKILL.md) — reusable agent skill
 - [`SOCKET_API.md`](./SOCKET_API.md) — socket protocol and cli reference
 

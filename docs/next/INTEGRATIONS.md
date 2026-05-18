@@ -12,6 +12,7 @@ if you want to inspect the exact files herdr installs, they are versioned in thi
 - [claude code hook](./src/integration/assets/claude/herdr-agent-state.sh)
 - [codex hook](./src/integration/assets/codex/herdr-agent-state.sh)
 - [opencode plugin](./src/integration/assets/opencode/herdr-agent-state.js)
+- [kimi hook](./src/integration/assets/kimi/herdr-agent-state.sh)
 
 ## how herdr uses integrations
 
@@ -30,6 +31,7 @@ herdr integration install pi
 herdr integration install claude
 herdr integration install codex
 herdr integration install opencode
+herdr integration install kimi
 ```
 
 ## uninstall commands
@@ -39,6 +41,7 @@ herdr integration uninstall pi
 herdr integration uninstall claude
 herdr integration uninstall codex
 herdr integration uninstall opencode
+herdr integration uninstall kimi
 ```
 
 ## pi
@@ -209,6 +212,53 @@ this removes:
 ```text
 ~/.config/opencode/plugins/herdr-agent-state.js
 ```
+
+## kimi
+
+install:
+
+```bash
+herdr integration install kimi
+```
+
+this:
+
+- writes the hook script to `~/.kimi/hooks/herdr-agent-state.sh`
+- appends `[[hooks]]` entries to `~/.kimi/config.toml`
+
+if `KIMI_SHARE_DIR` is set, herdr uses that directory instead, for example `$KIMI_SHARE_DIR/hooks/herdr-agent-state.sh` and `$KIMI_SHARE_DIR/config.toml`. `~` is expanded in `KIMI_SHARE_DIR`.
+
+bundled source: [`src/integration/assets/kimi/herdr-agent-state.sh`](./src/integration/assets/kimi/herdr-agent-state.sh)
+
+current hook mapping:
+
+- `SessionStart` → `idle`
+- `UserPromptSubmit` → `working`
+- `PreToolUse` → `working`
+- `PostToolUse` → `working`
+- `PostToolUseFailure` → `working`
+- `SubagentStart` → `working`
+- `SubagentStop` → `working`
+- `Stop` → `idle`
+- `StopFailure` → `idle`
+- `SessionEnd` → `release`
+- `Notification` (matcher: `permission_prompt`) → `blocked`
+
+notes:
+
+- kimi hooks are a beta feature. the exact event names and hook configuration format may change in future kimi versions.
+- herdr's marker comments (`# herdr-kimi-start` and `# herdr-kimi-end`) are used to identify and update its own hooks on reinstall.
+
+uninstall:
+
+```bash
+herdr integration uninstall kimi
+```
+
+this:
+
+- removes the same hook path herdr would install, using `KIMI_SHARE_DIR` when it is set
+- removes the herdr hooks block from the matching `config.toml`
 
 ## grok cli
 
